@@ -6,7 +6,11 @@ const path = require("path");
 const fs = require("fs");
 
 const app = express();
-const upload = multer({ dest: "uploads/" }); // PDFs get saved here temporarily
+// Auto-create uploads folder if it doesn't exist
+const fs = require('fs');
+if (!fs.existsSync('uploads')) fs.mkdirSync('uploads');
+
+const upload = multer({ dest: 'uploads/' });
 
 // Serve your HTML page when someone visits the website
 app.use(express.static(path.join(__dirname, "public")));
