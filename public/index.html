@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PDF Read Aloud</title>
+  <style>
+    /* --- Basic page styling --- */
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 800px;
+      margin: 40px auto;
+      padding: 20px;
+      background: #f0f4f8;
+    }
+
+    h1 { color: #2d3748; text-align: center; }
+
+    .upload-area {
+      background: white;
+      border: 2px dashed #90cdf4;
+      border-radius: 12px;
+      padding: 30px;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    input[type="file"] { margin: 10px 0; }
+
+    button {
+      background: #3182ce;
+      color: white;
+      border: none;
+      padding: 10px 24px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 16px;
+      margin: 6px;
+    }
+
+    button:hover { background: #2b6cb0; }
+
+    button:disabled {
+      background: #a0aec0;
+      cursor: not-allowed;
+    }
+
+    #status {
+      font-style: italic;
+      color: #718096;
+      margin: 10px 0;
+    }
+
+    #content-box {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      line-height: 1.8;
+      min-height: 200px;
+      white-space: pre-wrap;
+    }
+
+    /* Highlighted word while reading */
+    .highlight {
+      background: #fefcbf;
+      border-radius: 4px;
+      padding: 0 2px;
+    }
+
+    .bold-text { font-weight: bold; }
+    .newline-marker { color: #a0aec0; font-size: 12px; }
+  </style>
+</head>
+<body>
+
+  <h1>📄 PDF Read Aloud</h1>
+
+  <!-- Upload Section -->
+  <div class="upload-area">
+    <p>Choose a PDF file to upload:</p>
+    <input type="file" id="pdfInput" accept=".pdf" />
+    <br />
+    <button onclick="uploadPDF()">📤 Upload & Extract</button>
+  </div>
+
+  <p id="status">No file loaded yet.</p>
+
+  <!-- Playback Buttons -->
+  <div>
+    <button id="readBtn"  onclick="startReading()" disabled>▶ Read Aloud</button>
+    <button id="pauseBtn" onclick="pauseReading()" disabled>⏸ Pause</button>
+    <button id="stopBtn"  onclick="stopReading()"  disabled>⏹ Stop</button>
+  </div>
+
+  <!-- Extracted Text Display -->
+  <div id="content-box">Upload a PDF to see its content here...</div>
+
+<script>
+  // --- Global variables ---
+  let extractedContent = [];  // Stores all text chunks from the PDF
+  let speechQueue      = [];  // List of things to say out loud
+  let isReading        = false;
+  let isPaused         = false;
+  let currentUtterance = null;
+  let currentIndex     = 0;
+
+  // --- STEP 1: Upload the PDF to the server ---
+  async function uploadPDF() {
+    const fileInput = document.getElementById('pdfInput');
+    const file      = fileInput.files[0];
+
+    if (!file) {
+      alert('Please choose a PDF file first!');
+      return;
+    }
+
+    document.getElementById('status').textContent = '⏳ Uploading and reading PDF...';
+    document.getElementById('content-box').textContent = 'Loading...';
+
+    // Send the PDF to our server
+    const formData = new FormData();
+    formData.append('pdf', file);
+
+    try {
+      const response = await fetch('/upload', {
+        method: 'POST',
+        body: formData
+      });
+
+      const result = await response.json();
+
+      if (!result.success) {
+        throw new Error(result.error);
+      }
+
+      // Store the content and show it on screen
+      extractedContent = result.content;
+      displayContent(extractedContent);
+      buildSpeechQueue(extractedContent);
+
+      document.getElementById('status').textContent = '✅ PDF loaded! Click "Read Aloud" to start.';
+      document.getElementById('readBtn').disabled = false;
+
+    } catch (err) {
+      document.getElementById('status').textContent = '❌ Error: ' + err.message;
+    }
+  }
+
+  // --- STEP 2: Show the text on screen ---
+  function displayContent(content) {
+    const box = document.getElementById('content-box');
+    box.innerHTML = ''; // Clear old content
+
+    for (const item of content) {
+      if (item.type === 'text') {
+        const span = document.createElement('span');
+        span.textContent = item.value;
+        if (item.bold) span.classList.add('bold-text');
+        box.appendChild(span);
+
+      } else if (item.type === 'newline') {
+        // Show a visible new-line marker
+        const marker = document.createElement('span');
+        marker.classList.add('newline-marker');
+        marker.textContent = ' [new line] ';
+        box.appendChild(marker);
+        box.appendChild(document.createElement('br'));
+
+      } else if (item.type === 'newpage') {
+        const marker = document.createElement('div');
+        marker.style.cssText = 'border-top:2px solid #e2e8f0; margin:16px 0; color:#a0aec0; font-size:12px;';
+        marker.textContent   = `— Page ${item.pageNum} ends —`;
+        box.appendChild(marker);
+      }
+    }
+  }
+
+  // --- STEP 3: Build a list of spoken phrases ---
+  // This is what the text-to-speech will say out loud
+  function buildSpeechQueue(content) {
+    speechQueue = [];
+
+    for (const item of content) {
+      if (item.type === 'text') {
+        // Break the text into characters and announce punctuation
+        let buffer = '';
+
+        for (const char of item.value) {
+          if (char === ',') {
+            if (buffer.trim()) speechQueue.push(buffer.trim());
+            speechQueue.push('comma');
+            buffer = '';
+
+          } else if (char === '.') {
+            if (buffer.trim()) speechQueue.push(buffer.trim());
+            speechQueue.push('full stop');
+            buffer = '';
+
+          } else if (char === '!') {
+            if (buffer.trim()) speechQueue.push(buffer.trim());
+            speechQueue.push('exclamation mark');
+            buffer = '';
+
+          } else if (char === '?') {
+            if (buffer.trim()) speechQueue.push(buffer.trim());
+            speechQueue.push('question mark');
+            buffer = '';
+
+          } else if (char === ':') {
+            if (buffer.trim()) speechQueue.push(buffer.trim());
+            speechQueue.push('colon');
+            buffer = '';
+
+          } else if (char === ';') {
+            if (buffer.trim()) speechQueue.push(buffer.trim());
+            speechQueue.push('semicolon');
+            buffer = '';
+
+          } else if (char === '"' || char === '"' || char === '"') {
+            if (buffer.trim()) speechQueue.push(buffer.trim());
+            speechQueue.push('quote');
+            buffer = '';
+
+          } else {
+            buffer += char;
+          }
+        }
+
+        // If bold, announce it before the text
+        if (item.bold && buffer.trim()) {
+          speechQueue.push('bold text');
+        }
+
+        if (buffer.trim()) speechQueue.push(buffer.trim());
+
+      } else if (item.type === 'newline') {
+        speechQueue.push('new line');
+
+      } else if (item.type === 'newpage') {
+        speechQueue.push(`end of page ${item.pageNum}`);
+      }
+    }
+  }
+
+  // --- STEP 4: Read aloud using the browser's built-in voice ---
+  function startReading() {
+    if (!('speechSynthesis' in window)) {
+      alert('Sorry, your browser does not support text-to-speech.');
+      return;
+    }
+
+    if (isPaused) {
+      // Resume where we left off
+      window.speechSynthesis.resume();
+      isPaused  = false;
+      isReading = true;
+      updateButtons();
+      return;
+    }
+
+    // Start from the beginning
+    isReading    = true;
+    isPaused     = false;
+    currentIndex = 0;
+    window.speechSynthesis.cancel(); // Stop anything already playing
+    speakNext();
+    updateButtons();
+  }
+
+  // Speak one phrase at a time, then move to the next
+  function speakNext() {
+    if (!isReading || currentIndex >= speechQueue.length) {
+      isReading = false;
+      updateButtons();
+      document.getElementById('status').textContent = '✅ Finished reading!';
+      return;
+    }
+
+    const phrase = speechQueue[currentIndex];
+    const utterance = new SpeechSynthesisUtterance(phrase);
+
+    // Adjust speed and pitch so it sounds natural
+    utterance.rate  = 0.95; // Slightly slower than normal
+    utterance.pitch = 1.0;
+
+    // When one phrase finishes, move to the next
+    utterance.onend = () => {
+      currentIndex++;
+      speakNext();
+    };
+
+    utterance.onerror = () => {
+      currentIndex++;
+      speakNext();
+    };
+
+    currentUtterance = utterance;
+    document.getElementById('status').textContent =
+      `🔊 Reading... (${currentIndex + 1} / ${speechQueue.length})`;
+
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function pauseReading() {
+    if (isReading && !isPaused) {
+      window.speechSynthesis.pause();
+      isPaused  = true;
+      isReading = false;
+      document.getElementById('status').textContent = '⏸ Paused.';
+      updateButtons();
+    }
+  }
+
+  function stopReading() {
+    window.speechSynthesis.cancel();
+    isReading    = false;
+    isPaused     = false;
+    currentIndex = 0;
+    document.getElementById('status').textContent = '⏹ Stopped.';
+    updateButtons();
+  }
+
+  // Enable/disable buttons based on state
+  function updateButtons() {
+    document.getElementById('readBtn').disabled  = isReading;
+    document.getElementById('pauseBtn').disabled = !isReading;
+    document.getElementById('stopBtn').disabled  = (!isReading && !isPaused);
+  }
+</script>
+
+</body>
+</html>
